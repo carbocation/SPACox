@@ -237,9 +237,9 @@ SPACox.one.SNP = function(g,
   g[g==-9]=NA  # since we add plink input
   ## calculate MAF and update genotype vector
   MAF = mean(g, na.rm=T)/2
-  N = length(g)
+  n.subjects = length(g)
   pos.na = which(is.na(g))
-  missing.rate = length(pos.na)/N
+  missing.rate = length(pos.na)/n.subjects
 
   if(missing.rate != 0){
     if(impute.method=="fixed")
@@ -261,6 +261,14 @@ SPACox.one.SNP = function(g,
   if(!is.null(obj.null$p2g))
     g = g[obj.null$p2g]
 
+  n.rows = length(g)
+  if(n.rows != length(obj.null$resid))
+    stop("length(g) after matching genotype IDs should equal length(obj.null$resid).")
+  if(n.rows != nrow(obj.null$X.invXX))
+    stop("length(g) after matching genotype IDs should equal nrow(obj.null$X.invXX).")
+  if(n.rows != ncol(obj.null$tX))
+    stop("length(g) after matching genotype IDs should equal ncol(obj.null$tX).")
+
   ## Score statistic
   S = sum(g * obj.null$resid)
 
@@ -275,7 +283,7 @@ SPACox.one.SNP = function(g,
   }
 
   N1set = which(g!=0)  # position of non-zero genotypes
-  N0 = N-length(N1set)
+  N0 = n.rows-length(N1set)
 
   G1norm = G1/sqrt(S.var1)  # normalized genotype (such that sd=1)
 
@@ -297,7 +305,7 @@ SPACox.one.SNP = function(g,
 
   G2norm = G2/sqrt(S.var2)
 
-  N1set = 1:N
+  N1set = seq_len(n.rows)
   N0 = 0
   G2N1 = G2norm
   G2N0 = 0   # since N0=0, this value actually does not matter
