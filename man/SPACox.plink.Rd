@@ -39,6 +39,8 @@ Any variant with missing rate higher than this cutoff will be excluded from the 
 \item{min.maf}{a numeric value (default: 0.0001) to specify the cutoff of the minimal MAF. Any SNP with MAF < cutoff will be excluded from the analysis.}
 
 \item{CovAdj.cutoff}{a numeric value (default: 5e-5). If the p-value is less than this cutoff, then we would use an additional technic to adjust for covariates.}
+
+\item{G.model}{a character string (default: "Add") to specify the genetic model. Options are "Add", "Dom", and "Rec".}
 }
 \value{
 the function outputs to a file (output.file) with the following columns
@@ -78,6 +80,7 @@ To avoid that, we ask users to specify the IDs of both phenotype data (pIDs) and
 Users are responsible to check the consistency between pIDs and formula, and the consistency between gIDs and Geno.mtx(plink.file).
 }
 \examples{
+\dontrun{
 # Simulation phenotype and genotype
 N = 1000
 fam.file = system.file("extdata", "nSNPs-10000-nsubj-1000-ext.fam", package = "SPACox")
@@ -98,4 +101,5 @@ obj.null = SPACox_Null_Model(Surv(time,event)~Cov1+Cov2, data=Phen.mtx,
 
 ## output is written in output.file
 SPACox.plink(obj.null, plink.file, output.file)
+}
 }

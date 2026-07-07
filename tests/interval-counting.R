@@ -67,6 +67,24 @@ assert_true(
   "repeated-ID interval result should match equivalent expanded-genotype result"
 )
 
+interval.adjusted.result = SPACox.one.SNP(
+  g.subject,
+  obj.null,
+  Cutoff=0,
+  CovAdj.cutoff=1
+)
+expanded.adjusted.result = SPACox.one.SNP(
+  g.expanded,
+  obj.expanded,
+  Cutoff=0,
+  CovAdj.cutoff=1
+)
+
+assert_true(
+  isTRUE(all.equal(interval.adjusted.result, expanded.adjusted.result, tolerance=1e-10, check.attributes=FALSE)),
+  "covariate-adjusted interval result should match equivalent expanded-genotype result"
+)
+
 right.dat = data.frame(
   id = seq_len(n.subjects),
   time = c(1, 2, 3, 4, 5, 6),

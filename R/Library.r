@@ -10,7 +10,7 @@
 #' @param ... Other arguments passed to function coxph(). For more details, please refer to package survival.
 #' @return an object with a class of "SPACox_NULL_Model".
 #' @examples
-#' Please check help(SPACox) for a simulated example.
+#' # Please check help(SPACox) for a simulated example.
 #' @export
 #' @import survival
 SPACox_Null_Model = function(formula,
@@ -40,47 +40,104 @@ SPACox_Null_Model = function(formula,
   tX = t(X)
 
   ### calculate empirical CGF for martingale residuals
-  idx0 = qcauchy(1:length.out/(length.out+1))
-  idx1 = idx0 * max(range) / max(idx0)
-
-  cumul = NULL
   print("Start calculating empirical CGF for martingale residuals...")
-  c = 0
-  for(i in idx1){
-    c = c+1
-    t = i
-    e_resid = exp(mresid*t)
-    M0 = mean(e_resid)
-    M1 = mean(mresid*e_resid)
-    M2 = mean(mresid^2*e_resid)
-    K0 = log(M0)
-    K1 = M1/M0
-    K2 = (M0*M2-M1^2)/M0^2
-    cumul = rbind(cumul, c(t, K0, K1, K2))
-    if(c %% 1000 == 0) print(paste0("Complete ",c,"/",length.out,"."))
-  }
-
-  K_org_emp = approxfun(cumul[,1], cumul[,2], rule=2)
-  K_1_emp = approxfun(cumul[,1], cumul[,3], rule=2)
-  K_2_emp = approxfun(cumul[,1], cumul[,4], rule=2)
+  cgf = SPACox_empirical_CGF(mresid, range, length.out)
 
   var.resid = var(mresid)
+  row_to_genotype = if(is.null(p2g)) seq_along(pIDs) else as.integer(p2g)
+  row_count_by_genotype = tabulate(row_to_genotype, nbins=length(gIDs))
+  resid_sum_by_genotype = SPACox_rowsum_vector(mresid, row_to_genotype, length(gIDs))
+  tX_by_genotype = SPACox_rowsum_columns(tX, row_to_genotype, length(gIDs))
 
   re=list(resid = mresid,
           var.resid = var.resid,
-          K_org_emp = K_org_emp,
-          K_1_emp = K_1_emp,
-          K_2_emp = K_2_emp,
+          K_org_emp = cgf$K_org_emp,
+          K_1_emp = cgf$K_1_emp,
+          K_2_emp = cgf$K_2_emp,
+          cgf_n_total = cgf$n_total,
+          cgf_n_zero = cgf$n_zero,
+          cgf_resid_nonzero = cgf$resid_nonzero,
           Call = Call,
           obj.coxph = obj.coxph,
           tX = tX,
           X.invXX = X.invXX,
           p2g = p2g,
+          row_to_genotype = row_to_genotype,
+          row_count_by_genotype = row_count_by_genotype,
+          resid_sum_by_genotype = resid_sum_by_genotype,
+          tX_by_genotype = tX_by_genotype,
           gIDs = gIDs,
           pIDs = pIDs)
 
   class(re)<-"SPACox_NULL_Model"
   return(re)
+}
+
+SPACox_empirical_CGF = function(mresid, range, length.out)
+{
+  idx0 = qcauchy(1:length.out/(length.out+1))
+  idx1 = idx0 * max(range) / max(idx0)
+
+  cumul = matrix(NA_real_, length.out, 4)
+  cumul[,1] = idx1
+
+  n.total = length(mresid)
+  resid_nonzero = mresid[mresid != 0]
+  n.zero = n.total - length(resid_nonzero)
+
+  if(length(resid_nonzero) == 0){
+    cumul[,2] = 0
+    cumul[,3] = 0
+    cumul[,4] = 0
+  }else{
+    max.outer = 5e6
+    chunk.size = max(1, min(256, floor(max.outer/length(resid_nonzero))))
+    next.print = 1000
+
+    for(chunk.start in seq(1, length.out, by=chunk.size)){
+      chunk.end = min(length.out, chunk.start + chunk.size - 1)
+      t.chunk = idx1[chunk.start:chunk.end]
+
+      e.resid = exp(outer(resid_nonzero, t.chunk, "*"))
+      M0 = (colSums(e.resid) + n.zero)/n.total
+      M1 = colSums(resid_nonzero * e.resid)/n.total
+      M2 = colSums((resid_nonzero^2) * e.resid)/n.total
+
+      cumul[chunk.start:chunk.end, 2] = log(M0)
+      cumul[chunk.start:chunk.end, 3] = M1/M0
+      cumul[chunk.start:chunk.end, 4] = (M0*M2-M1^2)/M0^2
+
+      while(chunk.end >= next.print){
+        print(paste0("Complete ",next.print,"/",length.out,"."))
+        next.print = next.print + 1000
+      }
+    }
+  }
+
+  list(cumul = cumul,
+       K_org_emp = approxfun(cumul[,1], cumul[,2], rule=2),
+       K_1_emp = approxfun(cumul[,1], cumul[,3], rule=2),
+       K_2_emp = approxfun(cumul[,1], cumul[,4], rule=2),
+       n_total = n.total,
+       n_zero = n.zero,
+       resid_nonzero = resid_nonzero)
+}
+
+SPACox_rowsum_vector = function(x, group, n.groups)
+{
+  out = numeric(n.groups)
+  x.sum = rowsum(matrix(x, ncol=1), group, reorder=FALSE)
+  out[as.integer(rownames(x.sum))] = x.sum[,1]
+  out
+}
+
+SPACox_rowsum_columns = function(x, group, n.groups)
+{
+  out = matrix(0, nrow=nrow(x), ncol=n.groups)
+  x.sum = rowsum(t(x), group, reorder=FALSE)
+  out[, as.integer(rownames(x.sum))] = t(x.sum)
+  rownames(out) = rownames(x)
+  out
 }
 
 #' SaddlePoint Approximation implementation of a surival analysis
@@ -99,6 +156,7 @@ SPACox_Null_Model = function(formula,
 #' @param missing.cutoff a numeric value (default: 0.15) to specify the cutoff of the missing rates.
 #'                       Any variant with missing rate higher than this cutoff will be excluded from the analysis.
 #' @param CovAdj.cutoff a numeric value (default: 5e-5). If the p-value is less than this cutoff, then we would use an additional technic to adjust for covariates.
+#' @param G.model a character string (default: "Add") to specify the genetic model. Options are "Add", "Dom", and "Rec".
 #' @details To run SPACox, the following two steps are required:
 #' \itemize{
 #'   \item Step 1. Use function SPACox_Null_Model() to fit a null Cox model.
@@ -130,6 +188,7 @@ SPACox_Null_Model = function(formula,
 #' \item{Var}{estimated variances of the score statistics}
 #' \item{z}{z values corresponding to the score statistics}
 #' @examples
+#' \dontrun{
 #' # Simulation phenotype and genotype
 #' N = 10000
 #' nSNP = 1000
@@ -164,6 +223,7 @@ SPACox_Null_Model = function(formula,
 #'
 #' # The below is an example code to use survival package
 #' coxph(Surv(time,event)~Cov1+Cov2+Geno.mtx[,1], data=Phen.mtx)
+#' }
 #' @export
 SPACox = function(obj.null,
                   Geno.mtx,
@@ -222,7 +282,13 @@ SPACox = function(obj.null,
 #'
 #' One-SNP-version SPACox function. This function is to facilitate users that prefer reading and analyzing genotype line-by-line.
 #' @param g a numeric genotype vector. Missing genotype should be coded as NA. Both hard-called and imputed genotype data are supported.
-#' @param others the same as function SPACox. NOTE that we do not check subject order in this one-snp-version !!!
+#' @param obj.null an R object returned from function SPACox_Null_Model()
+#' @param Cutoff a numeric value (Default: 2) to specify the standard deviation cutoff to be used.
+#' @param impute.method a character string (default: "fixed") to specify the method to impute missing genotypes.
+#' @param missing.cutoff a numeric value (default: 0.15) to specify the cutoff of the missing rates.
+#' @param min.maf a numeric value (default: 0.0001) to specify the cutoff of the minimal MAF.
+#' @param CovAdj.cutoff a numeric value (default: 5e-5). If the p-value is less than this cutoff, then we would use an additional technic to adjust for covariates.
+#' @param G.model a character string (default: "Add") to specify the genetic model. Options are "Add", "Dom", and "Rec".
 #' @return the same as function SPACox.
 #' @export
 SPACox.one.SNP = function(g,
@@ -258,16 +324,62 @@ SPACox.one.SNP = function(g,
   if(MAF < min.maf || missing.rate > missing.cutoff)
     return(c(MAF, missing.rate, NA, NA, NA, NA, NA))
 
+  use.grouped = SPACox_can_use_grouped_genotype(g, obj.null)
+
+  if(use.grouped){
+    n.rows = length(obj.null$resid)
+    if(sum(obj.null$row_count_by_genotype) != n.rows)
+      stop("sum(obj.null$row_count_by_genotype) should equal length(obj.null$resid).")
+
+    ## Score statistic
+    S = sum(g * obj.null$resid_sum_by_genotype)
+
+    ## estimated variance without adjusting for covariates
+    G1 = g - 2*MAF   # centered genotype (such that mean=0)
+    S.var1 = obj.null$var.resid * sum(obj.null$row_count_by_genotype * G1^2)
+    z1 = S/sqrt(S.var1)
+
+    if(abs(z1) < Cutoff){
+      pval.norm = pnorm(abs(z1), lower.tail = FALSE)*2
+      return(c(MAF, missing.rate, pval.norm, pval.norm, S, S.var1, z1))
+    }
+
+    G1norm = G1/sqrt(S.var1)  # normalized genotype (such that sd=1)
+    G1.grouped = SPACox_group_values(G1norm, obj.null$row_count_by_genotype)
+
+    pval1 = GetProb_SPA_grouped(obj.null, G1.grouped$values, G1.grouped$counts, abs(z1), lower.tail = FALSE)
+    pval2 = GetProb_SPA_grouped(obj.null, G1.grouped$values, G1.grouped$counts, -abs(z1), lower.tail = TRUE)
+    pval = pval1 + pval2
+
+    if(pval[1] > CovAdj.cutoff)
+      return(c(MAF, missing.rate, pval, S, S.var1, z1))
+
+    ## estimated variance after adjusting for covariates
+    g.row = g[obj.null$row_to_genotype]
+    tXg = obj.null$tX_by_genotype %*% g
+    G2 = as.vector(g.row - obj.null$X.invXX %*% tXg)
+    S.var2 = obj.null$var.resid * sum(G2^2)
+    z2 = S/sqrt(S.var2)
+
+    G2norm = G2/sqrt(S.var2)
+
+    N1set = seq_len(n.rows)
+    N0 = 0
+    G2N1 = G2norm
+    G2N0 = 0   # since N0=0, this value actually does not matter
+
+    pval1 = GetProb_SPA(obj.null, G2N1, G2N0, N1set, N0, abs(z2), lower.tail = FALSE)
+    pval2 = GetProb_SPA(obj.null, G2N1, G2N0, N1set, N0, -abs(z2), lower.tail = TRUE)
+    pval = pval1 + pval2
+
+    return(c(MAF, missing.rate, pval, S, S.var2, z2))
+  }
+
   if(!is.null(obj.null$p2g))
     g = g[obj.null$p2g]
 
   n.rows = length(g)
-  if(n.rows != length(obj.null$resid))
-    stop("length(g) after matching genotype IDs should equal length(obj.null$resid).")
-  if(n.rows != nrow(obj.null$X.invXX))
-    stop("length(g) after matching genotype IDs should equal nrow(obj.null$X.invXX).")
-  if(n.rows != ncol(obj.null$tX))
-    stop("length(g) after matching genotype IDs should equal ncol(obj.null$tX).")
+  SPACox_check_row_genotype_length(n.rows, obj.null)
 
   ## Score statistic
   S = sum(g * obj.null$resid)
@@ -317,6 +429,40 @@ SPACox.one.SNP = function(g,
   return(c(MAF, missing.rate, pval, S, S.var2, z2))
 }
 
+SPACox_can_use_grouped_genotype = function(g, obj.null)
+{
+  !is.null(obj.null$row_count_by_genotype) &&
+    !is.null(obj.null$resid_sum_by_genotype) &&
+    !is.null(obj.null$row_to_genotype) &&
+    !is.null(obj.null$tX_by_genotype) &&
+    length(g) == length(obj.null$row_count_by_genotype)
+}
+
+SPACox_check_row_genotype_length = function(n.rows, obj.null)
+{
+  if(n.rows != length(obj.null$resid))
+    stop("length(g) after matching genotype IDs should equal length(obj.null$resid).")
+  if(n.rows != nrow(obj.null$X.invXX))
+    stop("length(g) after matching genotype IDs should equal nrow(obj.null$X.invXX).")
+  if(n.rows != ncol(obj.null$tX))
+    stop("length(g) after matching genotype IDs should equal ncol(obj.null$tX).")
+}
+
+SPACox_group_values = function(values, counts)
+{
+  keep = counts != 0
+  values = values[keep]
+  counts = counts[keep]
+
+  if(length(values) == 0)
+    return(list(values=numeric(0), counts=numeric(0)))
+
+  unique.values = unique(values)
+  group = match(values, unique.values)
+  grouped.counts = as.numeric(tapply(counts, group, sum))
+
+  list(values=unique.values, counts=grouped.counts)
+}
 
 GetProb_SPA = function(obj.null, G2NB, G2NA, NBset, N0, q2, lower.tail){
 
@@ -327,6 +473,28 @@ GetProb_SPA = function(obj.null, G2NB, G2NA, NBset, N0, q2, lower.tail){
 
   k1 = K_org(zeta,  G2NB=G2NB, G2NA=G2NA, NBset=NBset, N0=N0, obj.null=obj.null)
   k2 = K2(zeta,  G2NB=G2NB, G2NA=G2NA, NBset=NBset, N0=N0, obj.null=obj.null)
+
+  temp1 = zeta * q2 - k1
+
+  w = sign(zeta) * (2 *temp1)^{1/2}
+  v = zeta * (k2)^{1/2}
+
+  pval = pnorm(w + 1/w * log(v/w), lower.tail = lower.tail)
+  pval.norm = pnorm(q2, lower.tail = lower.tail)
+
+  re = c(pval, pval.norm)
+  return(re)
+}
+
+GetProb_SPA_grouped = function(obj.null, G2N, counts, q2, lower.tail){
+
+  out = uniroot(K1_adj_grouped, c(-20,20), extendInt = "upX",
+                G2N=G2N, counts=counts,
+                q2=q2, obj.null=obj.null)
+  zeta = out$root
+
+  k1 = K_org_grouped(zeta, G2N=G2N, counts=counts, obj.null=obj.null)
+  k2 = K2_grouped(zeta, G2N=G2N, counts=counts, obj.null=obj.null)
 
   temp1 = zeta * q2 - k1
 
@@ -354,6 +522,18 @@ K_org = function(t, G2NB, G2NA, NBset, N0, obj.null){
   return(out)
 }
 
+K_org_grouped = function(t, G2N, counts, obj.null){
+
+  n.t = length(t)
+  out = rep(0,n.t)
+  for(i in 1:n.t){
+    t1 = t[i]
+    t2N = t1*G2N
+    out[i] = sum(counts*obj.null$K_org_emp(t2N))
+  }
+  return(out)
+}
+
 K1_adj = function(t, G2NB, G2NA, NBset, N0, q2, obj.null)
 {
   n.t = length(t)
@@ -368,6 +548,19 @@ K1_adj = function(t, G2NB, G2NA, NBset, N0, q2, obj.null)
   return(out)
 }
 
+K1_adj_grouped = function(t, G2N, counts, q2, obj.null)
+{
+  n.t = length(t)
+  out = rep(0,n.t)
+
+  for(i in 1:n.t){
+    t1 = t[i]
+    t2N = t1*G2N
+    out[i] = sum(counts*G2N*obj.null$K_1_emp(t2N)) - q2
+  }
+  return(out)
+}
+
 K2 = function(t, G2NB, G2NA, NBset, N0, obj.null)
 {
   n.t = length(t)
@@ -378,6 +571,19 @@ K2 = function(t, G2NB, G2NA, NBset, N0, obj.null)
     t2NA = t1*G2NA
     t2NB = t1*G2NB
     out[i] = N0*G2NA^2*obj.null$K_2_emp(t2NA) + sum(G2NB^2*obj.null$K_2_emp(t2NB))
+  }
+  return(out)
+}
+
+K2_grouped = function(t, G2N, counts, obj.null)
+{
+  n.t = length(t)
+  out = rep(0,n.t)
+
+  for(i in 1:n.t){
+    t1 = t[i]
+    t2N = t1*G2N
+    out[i] = sum(counts*G2N^2*obj.null$K_2_emp(t2N))
   }
   return(out)
 }

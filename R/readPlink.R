@@ -14,6 +14,7 @@
 #' @param missing.cutoff a numeric value (default: 0.15) to specify the cutoff of the missing rates.
 #'                       Any variant with missing rate higher than this cutoff will be excluded from the analysis.
 #' @param CovAdj.cutoff a numeric value (default: 5e-5). If the p-value is less than this cutoff, then we would use an additional technic to adjust for covariates.
+#' @param G.model a character string (default: "Add") to specify the genetic model. Options are "Add", "Dom", and "Rec".
 #' @details To run SPACox, the following two steps are required:
 #' \itemize{
 #'   \item Step 1. Use function SPACox_Null_Model() to fit a null Cox model.
@@ -46,6 +47,7 @@
 #' \item{Var}{estimated variances of the score statistics}
 #' \item{z}{z values corresponding to the score statistics}
 #' @examples
+#' \dontrun{
 #' # Simulation phenotype and genotype
 #' N = 1000
 #' fam.file = system.file("extdata", "nSNPs-10000-nsubj-1000-ext.fam", package = "SPACox")
@@ -66,6 +68,7 @@
 #'
 #' ## output is written in output.file
 #' SPACox.plink(obj.null, plink.file, output.file)
+#' }
 #' @export
 #' @import seqminer
 #' @import data.table

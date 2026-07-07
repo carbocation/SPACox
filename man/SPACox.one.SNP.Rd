@@ -18,7 +18,19 @@ SPACox.one.SNP(
 \arguments{
 \item{g}{a numeric genotype vector. Missing genotype should be coded as NA. Both hard-called and imputed genotype data are supported.}
 
-\item{others}{the same as function SPACox. NOTE that we do not check subject order in this one-snp-version !!!}
+\item{obj.null}{an R object returned from function SPACox_Null_Model()}
+
+\item{Cutoff}{a numeric value (Default: 2) to specify the standard deviation cutoff to be used.}
+
+\item{impute.method}{a character string (default: "fixed") to specify the method to impute missing genotypes.}
+
+\item{missing.cutoff}{a numeric value (default: 0.15) to specify the cutoff of the missing rates.}
+
+\item{min.maf}{a numeric value (default: 0.0001) to specify the cutoff of the minimal MAF.}
+
+\item{CovAdj.cutoff}{a numeric value (default: 5e-5). If the p-value is less than this cutoff, then we would use an additional technic to adjust for covariates.}
+
+\item{G.model}{a character string (default: "Add") to specify the genetic model. Options are "Add", "Dom", and "Rec".}
 }
 \value{
 the same as function SPACox.
