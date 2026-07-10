@@ -93,19 +93,47 @@ SPACox_empirical_CGF = function(mresid, range, length.out)
     max.outer = 5e6
     chunk.size = max(1, min(256, floor(max.outer/length(resid_nonzero))))
     next.print = 1000
+    resid.min = min(resid_nonzero)
+    resid.max = max(resid_nonzero)
+    resid.squared = resid_nonzero^2
 
     for(chunk.start in seq(1, length.out, by=chunk.size)){
       chunk.end = min(length.out, chunk.start + chunk.size - 1)
       t.chunk = idx1[chunk.start:chunk.end]
 
-      e.resid = exp(outer(resid_nonzero, t.chunk, "*"))
-      M0 = (colSums(e.resid) + n.zero)/n.total
-      M1 = colSums(resid_nonzero * e.resid)/n.total
-      M2 = colSums((resid_nonzero^2) * e.resid)/n.total
+      # Shift each column by its largest log weight. This keeps all arguments
+      # to exp() non-positive while preserving the empirical CGF exactly.
+      log.weights = outer(resid_nonzero, t.chunk, "*")
+      shift = ifelse(t.chunk >= 0,
+                     t.chunk * resid.max,
+                     t.chunk * resid.min)
+      if(n.zero != 0)
+        shift = pmax(shift, 0)
+      weights = exp(sweep(log.weights, 2, shift, "-"))
 
-      cumul[chunk.start:chunk.end, 2] = log(M0)
-      cumul[chunk.start:chunk.end, 3] = M1/M0
-      cumul[chunk.start:chunk.end, 4] = (M0*M2-M1^2)/M0^2
+      zero.weight = n.zero * exp(-shift)
+      weight.sum = colSums(weights) + zero.weight
+      weighted.mean = colSums(resid_nonzero * weights)/weight.sum
+      weighted.second = colSums(resid.squared * weights)/weight.sum
+      weighted.var = weighted.second - weighted.mean^2
+
+      # Recalculate tail columns around their weighted mean when the raw
+      # second-moment identity is vulnerable to cancellation.
+      variance.scale = pmax(weighted.second,
+                            weighted.mean^2,
+                            .Machine$double.xmin)
+      unstable = which(!is.finite(weighted.var) |
+                         weighted.var < sqrt(.Machine$double.eps) * variance.scale)
+      for(j in unstable){
+        centered = resid_nonzero - weighted.mean[j]
+        weighted.var[j] =
+          (sum(weights[,j] * centered^2) +
+             zero.weight[j] * weighted.mean[j]^2)/weight.sum[j]
+      }
+
+      cumul[chunk.start:chunk.end, 2] = shift + log(weight.sum) - log(n.total)
+      cumul[chunk.start:chunk.end, 3] = weighted.mean
+      cumul[chunk.start:chunk.end, 4] = weighted.var
 
       while(chunk.end >= next.print){
         print(paste0("Complete ",next.print,"/",length.out,"."))

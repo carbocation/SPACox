@@ -56,6 +56,26 @@ assert_true(
 assert_true(new.cgf$n_total == length(resid.test), "CGF total count should match residual length")
 assert_true(new.cgf$n_zero == sum(resid.test == 0), "CGF zero count should match exact zero residual count")
 
+overflow.resid = c(-8, 0, 0.5, 1)
+overflow.cgf = SPACox_empirical_CGF(overflow.resid, c(-100, 100), 101)
+
+assert_true(
+  all(is.finite(overflow.cgf$cumul)),
+  "empirical CGF should remain finite when unshifted exponentials would overflow"
+)
+assert_true(
+  isTRUE(all.equal(overflow.cgf$cumul[1,2], 800-log(length(overflow.resid)), tolerance=1e-12)),
+  "log-space empirical CGF should preserve the dominant tail term"
+)
+assert_true(
+  isTRUE(all.equal(overflow.cgf$cumul[1,3], -8, tolerance=1e-12)),
+  "log-space empirical CGF derivative should approach the extreme residual"
+)
+assert_true(
+  all(overflow.cgf$cumul[,4] >= 0),
+  "empirical CGF second derivative should be non-negative"
+)
+
 set.seed(21)
 n.subjects = 7
 n.intervals = 4
