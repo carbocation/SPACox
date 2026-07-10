@@ -109,25 +109,23 @@ fn calculate_point_simd_kernel<S: Simd>(
     let width = S::Vf64::WIDTH;
 
     for block in residuals.chunks(SUM_BLOCK_SIZE) {
-        let mut block_weight = 0.0;
-        let mut block_weighted = 0.0;
-        let mut block_squared = 0.0;
+        let mut block_weight_vector = S::Vf64::zeroes();
+        let mut block_weighted_vector = S::Vf64::zeroes();
+        let mut block_squared_vector = S::Vf64::zeroes();
         let mut index = 0;
 
         while index + width <= block.len() {
             let residual_vector = S::Vf64::load_from_slice(&block[index..]);
             let weights = exp_weight_vector::<S>(residual_vector, t_vector, shift_vector);
-
-            for lane in 0..width {
-                let residual = block[index + lane];
-                let weight = weights[lane];
-                block_weight += weight;
-                block_weighted += weight * residual;
-                block_squared += weight * residual * residual;
-            }
+            block_weight_vector += weights;
+            block_weighted_vector += weights * residual_vector;
+            block_squared_vector += weights * residual_vector * residual_vector;
             index += width;
         }
 
+        let mut block_weight = block_weight_vector.horizontal_add();
+        let mut block_weighted = block_weighted_vector.horizontal_add();
+        let mut block_squared = block_squared_vector.horizontal_add();
         for &residual in &block[index..] {
             let weight = (t * residual - shift).exp();
             block_weight += weight;
@@ -149,21 +147,20 @@ fn calculate_point_simd_kernel<S: Simd>(
 
     if !weighted_variance.is_finite() || weighted_variance < f64::EPSILON.sqrt() * variance_scale {
         let mut variance_numerator = zero_weight * weighted_mean * weighted_mean;
+        let weighted_mean_vector = S::Vf64::set1(weighted_mean);
         for block in residuals.chunks(SUM_BLOCK_SIZE) {
-            let mut block_variance = 0.0;
+            let mut block_variance_vector = S::Vf64::zeroes();
             let mut index = 0;
 
             while index + width <= block.len() {
                 let residual_vector = S::Vf64::load_from_slice(&block[index..]);
                 let weights = exp_weight_vector::<S>(residual_vector, t_vector, shift_vector);
-
-                for lane in 0..width {
-                    let centered = block[index + lane] - weighted_mean;
-                    block_variance += weights[lane] * centered * centered;
-                }
+                let centered = residual_vector - weighted_mean_vector;
+                block_variance_vector += weights * centered * centered;
                 index += width;
             }
 
+            let mut block_variance = block_variance_vector.horizontal_add();
             for &residual in &block[index..] {
                 let centered = residual - weighted_mean;
                 let weight = (t * residual - shift).exp();
