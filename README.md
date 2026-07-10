@@ -3,7 +3,7 @@ A semiparametric empirical SPA approach based on a Cox regression model fitting 
 
 ### How to install and load this package
 
-SPACox requires a Rust toolchain with `cargo` available on `PATH`. Rust 1.63
+SPACox requires a Rust toolchain with `cargo` available on `PATH`. Rust 1.89
 or newer is supported. The package compiles its native empirical-CGF backend
 during installation.
 
@@ -15,9 +15,11 @@ library(SPACox)
 ```
 Current version is 0.1.2. For older version and version update information, plesase refer to OldVersions/
 
-The Rust CGF backend is used by default and automatically uses the threads
-available to the process. The thread count can be limited explicitly, and the
-stable R implementation remains available for numerical comparisons:
+The Rust CGF backend is used by default, selects AVX2 SIMD at runtime when the
+processor supports it, and automatically uses the threads available to the
+process. Other processors retain the original scalar kernel. The thread count
+can be limited explicitly, and the scalar Rust and stable R implementations
+remain available for numerical comparisons:
 
 ```{r}
 obj.null = SPACox_Null_Model(
@@ -35,6 +37,14 @@ obj.null.reference = SPACox_Null_Model(
   pIDs = Phen.mtx$ID,
   gIDs = rownames(Geno.mtx),
   cgf.backend = "R"
+)
+
+obj.null.scalar = SPACox_Null_Model(
+  survival::Surv(time, event) ~ Cov1 + Cov2,
+  data = Phen.mtx,
+  pIDs = Phen.mtx$ID,
+  gIDs = rownames(Geno.mtx),
+  cgf.backend = "rust-scalar"
 )
 ```
 

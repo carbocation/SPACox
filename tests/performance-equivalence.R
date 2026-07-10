@@ -83,6 +83,13 @@ rust.available = exists(
 )
 
 if(rust.available) {
+  rust.small.scalar = SPACox_empirical_CGF(
+    resid.test,
+    range.test,
+    length.out.test,
+    backend="rust-scalar",
+    threads=1
+  )
   rust.small = SPACox_empirical_CGF(
     resid.test,
     range.test,
@@ -91,8 +98,16 @@ if(rust.available) {
     threads=1
   )
   assert_true(
+    isTRUE(all.equal(rust.small.scalar$cumul, new.cgf$cumul, tolerance=1e-12, check.attributes=FALSE)),
+    "Scalar Rust CGF should match the R reference implementation"
+  )
+  assert_true(
     isTRUE(all.equal(rust.small$cumul, new.cgf$cumul, tolerance=1e-12, check.attributes=FALSE)),
-    "Rust CGF should match the R reference implementation"
+    "SIMD Rust CGF should match the R reference implementation"
+  )
+  assert_true(
+    rust.small$kernel %in% c("avx2", "scalar"),
+    "Rust CGF should report the selected native kernel"
   )
 
   rust.overflow = SPACox_empirical_CGF(
@@ -104,7 +119,7 @@ if(rust.available) {
   )
   assert_true(
     isTRUE(all.equal(rust.overflow$cumul, overflow.cgf$cumul, tolerance=1e-12, check.attributes=FALSE)),
-    "Rust CGF should match the R reference implementation in overflow tails"
+    "SIMD Rust CGF should match the R reference implementation in overflow tails"
   )
 
   set.seed(22)
@@ -129,9 +144,24 @@ if(rust.available) {
     backend="rust",
     threads=2
   )
+  rust.scalar = SPACox_empirical_CGF(
+    rust.resid,
+    c(-100, 100),
+    201,
+    backend="rust-scalar",
+    threads=1
+  )
   assert_true(
     isTRUE(all.equal(rust.single$cumul, rust.reference$cumul, tolerance=1e-10, check.attributes=FALSE)),
     "Rust CGF should match the R reference for random residuals"
+  )
+  assert_true(
+    isTRUE(all.equal(rust.scalar$cumul, rust.reference$cumul, tolerance=1e-10, check.attributes=FALSE)),
+    "Scalar Rust CGF should match the R reference for random residuals"
+  )
+  assert_true(
+    isTRUE(all.equal(rust.single$cumul, rust.scalar$cumul, tolerance=1e-10, check.attributes=FALSE)),
+    "SIMD Rust CGF should match the scalar native kernel"
   )
   assert_true(
     identical(rust.single$cumul, rust.parallel$cumul),

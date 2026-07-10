@@ -16,4 +16,4 @@ Depends:
 Imports:
   survival
 NeedsCompilation: yes
-SystemRequirements: Cargo and Rust >= 1.63
+SystemRequirements: Cargo and Rust >= 1.89

@@ -11,14 +11,22 @@ extern int spacox_cgf_compute(const double *residuals,
                               const double *t_values,
                               size_t t_count,
                               size_t thread_count,
+                              size_t use_simd,
                               double *k0,
                               double *k1,
                               double *k2);
+extern int spacox_cgf_simd_available(void);
+
+SEXP C_spacox_cgf_simd_available_call(void)
+{
+    return Rf_ScalarLogical(spacox_cgf_simd_available() != 0);
+}
 
 SEXP C_spacox_empirical_cgf_call(SEXP residuals,
                                   SEXP t_values,
                                   SEXP zero_count,
-                                  SEXP thread_count)
+                                  SEXP thread_count,
+                                  SEXP use_simd)
 {
     if (TYPEOF(residuals) != REALSXP)
         Rf_error("residuals must be a double vector");
@@ -41,6 +49,10 @@ SEXP C_spacox_empirical_cgf_call(SEXP residuals,
     if (thread_count_value == NA_INTEGER || thread_count_value < 0)
         Rf_error("thread_count must be a non-negative integer");
 
+    int use_simd_value = Rf_asLogical(use_simd);
+    if (use_simd_value == NA_LOGICAL)
+        Rf_error("use_simd must be TRUE or FALSE");
+
     SEXP output = PROTECT(Rf_allocMatrix(REALSXP, (int) t_count_x, 3));
     double *output_data = REAL(output);
     size_t t_count_size = (size_t) t_count_x;
@@ -51,6 +63,7 @@ SEXP C_spacox_empirical_cgf_call(SEXP residuals,
                                     REAL(t_values),
                                     t_count_size,
                                     (size_t) thread_count_value,
+                                    (size_t) use_simd_value,
                                     output_data,
                                     output_data + t_count_size,
                                     output_data + 2 * t_count_size);

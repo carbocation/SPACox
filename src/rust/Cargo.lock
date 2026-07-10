@@ -3,5 +3,30 @@
 version = 4
 
 [[package]]
+name = "cfg-if"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "simdeez"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35bc92272e09cdb506befe0c48f5f865fdda52e77bbe1738f74bed79f29c4733"
+dependencies = [
+ "cfg-if",
+ "paste",
+]
+
+[[package]]
 name = "spacox-cgf"
 version = "0.1.0"
+dependencies = [
+ "simdeez",
+]

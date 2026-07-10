@@ -6,8 +6,8 @@
 #' @param pIDs a character vector of subject IDs. NOTE: its order should be the same as the subjects order in the formula.
 #' @param gIDs a character vector of subject IDs. NOTE: its order should be the same as the subjects order of the Geno.mtx (i.e. the input of the function SPACox()).
 #' @param range a two-element numeric vector (default: c(-100,100)) to specify the domain of the empirical CGF.
-#' @param length.out a positive integer (default: 9999) for empirical CGF. Larger length.out corresponds to longer calculation time and more accurate estimated empirical CGF.
-#' @param cgf.backend implementation used to calculate the empirical CGF. The default "rust" uses the native parallel backend; "R" uses the reference implementation.
+#' @param length.out a positive integer (default: 10000) for empirical CGF. Larger length.out corresponds to longer calculation time and more accurate estimated empirical CGF.
+#' @param cgf.backend implementation used to calculate the empirical CGF. The default "rust" uses AVX2 SIMD when available and otherwise falls back to the original scalar native kernel; "rust-scalar" forces the scalar native kernel; "R" uses the reference implementation.
 #' @param cgf.threads number of threads used by the Rust CGF backend. NULL uses the number of threads available to the process.
 #' @param y whether to retain the response matrix in the fitted coxph object. The default FALSE reduces the memory retained by the null model.
 #' @param ... Other arguments passed to function coxph(). For more details, please refer to package survival.
@@ -23,7 +23,7 @@ SPACox_Null_Model = function(formula,
                              gIDs=NULL,
                              range=c(-100,100),
                              length.out = 10000,
-                             cgf.backend = c("rust", "R"),
+                             cgf.backend = c("rust", "rust-scalar", "R"),
                              cgf.threads = NULL,
                              y = FALSE,
                              ...)
@@ -69,6 +69,7 @@ SPACox_Null_Model = function(formula,
           cgf_n_zero = cgf$n_zero,
           cgf_resid_nonzero = cgf$resid_nonzero,
           cgf_backend = cgf$backend,
+          cgf_kernel = cgf$kernel,
           cgf_threads = cgf$threads,
           Call = Call,
           obj.coxph = obj.coxph,
@@ -89,7 +90,7 @@ SPACox_Null_Model = function(formula,
 SPACox_empirical_CGF = function(mresid,
                                 range,
                                 length.out,
-                                backend=c("rust", "R"),
+                                backend=c("rust", "rust-scalar", "R"),
                                 threads=NULL)
 {
   backend = match.arg(backend)
@@ -104,18 +105,28 @@ SPACox_empirical_CGF = function(mresid,
   n.total = length(mresid)
   resid_nonzero = mresid[mresid != 0]
   n.zero = n.total - length(resid_nonzero)
+  kernel = if(backend == "R") "R" else "scalar"
+
+  if(backend == "rust"){
+    simd.binding.available = exists("C_spacox_cgf_simd_available",
+                                    envir=environment(SPACox_empirical_CGF),
+                                    inherits=FALSE)
+    if(simd.binding.available && isTRUE(.Call(C_spacox_cgf_simd_available)))
+      kernel = "avx2"
+  }
 
   if(length(resid_nonzero) == 0){
     cumul[,2] = 0
     cumul[,3] = 0
     cumul[,4] = 0
-  }else if(backend == "rust"){
+  }else if(backend %in% c("rust", "rust-scalar")){
     rust.available = exists("C_spacox_empirical_cgf",
                             envir=environment(SPACox_empirical_CGF),
                             inherits=FALSE)
     if(!rust.available){
       warning("Rust CGF backend is not loaded; using the R reference backend.")
       backend = "R"
+      kernel = "R"
       cumul[,2:4] = SPACox_empirical_CGF_R(resid_nonzero,
                                            n.zero,
                                            n.total,
@@ -125,7 +136,8 @@ SPACox_empirical_CGF = function(mresid,
                            resid_nonzero,
                            idx1,
                            as.double(n.zero),
-                           threads)
+                           threads,
+                           identical(backend, "rust"))
     }
   }else{
     cumul[,2:4] = SPACox_empirical_CGF_R(resid_nonzero,
@@ -142,7 +154,8 @@ SPACox_empirical_CGF = function(mresid,
        n_zero = n.zero,
        resid_nonzero = resid_nonzero,
        backend = backend,
-       threads = if(backend == "rust") threads else 0L)
+       kernel = kernel,
+       threads = if(backend %in% c("rust", "rust-scalar")) threads else 0L)
 }
 
 SPACox_CGF_threads = function(threads)

@@ -9,7 +9,7 @@ PKG_LIBS = $(RUST_LIB)
 $(SHLIB): $(RUST_LIB)
 
 $(RUST_LIB): $(RUST_SOURCES)
-	CARGO_TARGET_DIR=$(RUST_TARGET_DIR) cargo build --manifest-path $(RUST_MANIFEST) --release
+	CARGO_TARGET_DIR=$(RUST_TARGET_DIR) cargo build --manifest-path $(RUST_MANIFEST) --release --locked
 
 clean:
 	cargo clean --manifest-path $(RUST_MANIFEST)
