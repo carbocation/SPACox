@@ -9,6 +9,7 @@
 #' @param length.out a positive integer (default: 9999) for empirical CGF. Larger length.out corresponds to longer calculation time and more accurate estimated empirical CGF.
 #' @param cgf.backend implementation used to calculate the empirical CGF. The default "rust" uses the native parallel backend; "R" uses the reference implementation.
 #' @param cgf.threads number of threads used by the Rust CGF backend. NULL uses the number of threads available to the process.
+#' @param y whether to retain the response matrix in the fitted coxph object. The default FALSE reduces the memory retained by the null model.
 #' @param ... Other arguments passed to function coxph(). For more details, please refer to package survival.
 #' @return an object with a class of "SPACox_NULL_Model".
 #' @examples
@@ -24,6 +25,7 @@ SPACox_Null_Model = function(formula,
                              length.out = 10000,
                              cgf.backend = c("rust", "R"),
                              cgf.threads = NULL,
+                             y = FALSE,
                              ...)
 {
   Call = match.call()
@@ -31,7 +33,7 @@ SPACox_Null_Model = function(formula,
   cgf.backend = match.arg(cgf.backend)
 
   ### Fit a Cox model
-  obj.coxph = coxph(formula, data=data, x=T, ...)
+  obj.coxph = coxph(formula, data=data, x=TRUE, y=y, ...)
 
   ### Check input arguments
   obj.check = check_input(pIDs, gIDs, obj.coxph, range)

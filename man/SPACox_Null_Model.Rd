@@ -13,6 +13,7 @@ SPACox_Null_Model(
   length.out = 10000,
   cgf.backend = c("rust", "R"),
   cgf.threads = NULL,
+  y = FALSE,
   ...
 )
 }
@@ -32,6 +33,8 @@ SPACox_Null_Model(
 \item{cgf.backend}{implementation used to calculate the empirical CGF. The default "rust" uses the native parallel backend; "R" uses the reference implementation.}
 
 \item{cgf.threads}{number of threads used by the Rust CGF backend. NULL uses the number of threads available to the process.}
+
+\item{y}{whether to retain the response matrix in the fitted coxph object. The default FALSE reduces the memory retained by the null model.}
 
 \item{...}{Other arguments passed to function coxph(). For more details, please refer to package survival.}
 }

@@ -164,6 +164,25 @@ obj.null = SPACox_Null_Model(
   length.out=200
 )
 
+assert_true(
+  is.null(obj.null$obj.coxph$y),
+  "SPACox null models should not retain the Cox response matrix by default"
+)
+
+obj.null.with.y = SPACox_Null_Model(
+  Surv(start, stop, event) ~ x,
+  data=dat,
+  pIDs=as.character(dat$id),
+  gIDs=rownames(geno),
+  length.out=20,
+  y=TRUE
+)
+
+assert_true(
+  !is.null(obj.null.with.y$obj.coxph$y),
+  "SPACox null models should retain the Cox response matrix when y=TRUE"
+)
+
 g.row = g.subject[obj.null$row_to_genotype]
 MAF = mean(g.subject, na.rm=TRUE)/2
 S.grouped = sum(g.subject * obj.null$resid_sum_by_genotype)
