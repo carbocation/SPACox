@@ -11,6 +11,8 @@ SPACox_Null_Model(
   gIDs = NULL,
   range = c(-100, 100),
   length.out = 10000,
+  cgf.backend = c("rust", "R"),
+  cgf.threads = NULL,
   ...
 )
 }
@@ -26,6 +28,10 @@ SPACox_Null_Model(
 \item{range}{a two-element numeric vector (default: c(-100,100)) to specify the domain of the empirical CGF.}
 
 \item{length.out}{a positive integer (default: 9999) for empirical CGF. Larger length.out corresponds to longer calculation time and more accurate estimated empirical CGF.}
+
+\item{cgf.backend}{implementation used to calculate the empirical CGF. The default "rust" uses the native parallel backend; "R" uses the reference implementation.}
+
+\item{cgf.threads}{number of threads used by the Rust CGF backend. NULL uses the number of threads available to the process.}
 
 \item{...}{Other arguments passed to function coxph(). For more details, please refer to package survival.}
 }

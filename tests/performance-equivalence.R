@@ -46,7 +46,7 @@ GetProb_SPA_grouped = get_spacox_fun("GetProb_SPA_grouped")
 resid.test = c(0, 0, -0.75, 0, 0.2, 0, 1.1, -0.4, 0)
 range.test = c(-3, 3)
 length.out.test = 101
-new.cgf = SPACox_empirical_CGF(resid.test, range.test, length.out.test)
+new.cgf = SPACox_empirical_CGF(resid.test, range.test, length.out.test, backend="R")
 old.cgf = old_empirical_cgf(resid.test, range.test, length.out.test)
 
 assert_true(
@@ -57,7 +57,7 @@ assert_true(new.cgf$n_total == length(resid.test), "CGF total count should match
 assert_true(new.cgf$n_zero == sum(resid.test == 0), "CGF zero count should match exact zero residual count")
 
 overflow.resid = c(-8, 0, 0.5, 1)
-overflow.cgf = SPACox_empirical_CGF(overflow.resid, c(-100, 100), 101)
+overflow.cgf = SPACox_empirical_CGF(overflow.resid, c(-100, 100), 101, backend="R")
 
 assert_true(
   all(is.finite(overflow.cgf$cumul)),
@@ -75,6 +75,69 @@ assert_true(
   all(overflow.cgf$cumul[,4] >= 0),
   "empirical CGF second derivative should be non-negative"
 )
+
+rust.available = exists(
+  "C_spacox_empirical_cgf",
+  envir=environment(SPACox_empirical_CGF),
+  inherits=TRUE
+)
+
+if(rust.available) {
+  rust.small = SPACox_empirical_CGF(
+    resid.test,
+    range.test,
+    length.out.test,
+    backend="rust",
+    threads=1
+  )
+  assert_true(
+    isTRUE(all.equal(rust.small$cumul, new.cgf$cumul, tolerance=1e-12, check.attributes=FALSE)),
+    "Rust CGF should match the R reference implementation"
+  )
+
+  rust.overflow = SPACox_empirical_CGF(
+    overflow.resid,
+    c(-100, 100),
+    101,
+    backend="rust",
+    threads=1
+  )
+  assert_true(
+    isTRUE(all.equal(rust.overflow$cumul, overflow.cgf$cumul, tolerance=1e-12, check.attributes=FALSE)),
+    "Rust CGF should match the R reference implementation in overflow tails"
+  )
+
+  set.seed(22)
+  rust.resid = c(rnorm(10000), rep(0, 1000))
+  rust.reference = SPACox_empirical_CGF(
+    rust.resid,
+    c(-100, 100),
+    201,
+    backend="R"
+  )
+  rust.single = SPACox_empirical_CGF(
+    rust.resid,
+    c(-100, 100),
+    201,
+    backend="rust",
+    threads=1
+  )
+  rust.parallel = SPACox_empirical_CGF(
+    rust.resid,
+    c(-100, 100),
+    201,
+    backend="rust",
+    threads=2
+  )
+  assert_true(
+    isTRUE(all.equal(rust.single$cumul, rust.reference$cumul, tolerance=1e-10, check.attributes=FALSE)),
+    "Rust CGF should match the R reference for random residuals"
+  )
+  assert_true(
+    identical(rust.single$cumul, rust.parallel$cumul),
+    "Rust CGF should be deterministic across thread counts"
+  )
+}
 
 set.seed(21)
 n.subjects = 7

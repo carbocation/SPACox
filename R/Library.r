@@ -7,21 +7,28 @@
 #' @param gIDs a character vector of subject IDs. NOTE: its order should be the same as the subjects order of the Geno.mtx (i.e. the input of the function SPACox()).
 #' @param range a two-element numeric vector (default: c(-100,100)) to specify the domain of the empirical CGF.
 #' @param length.out a positive integer (default: 9999) for empirical CGF. Larger length.out corresponds to longer calculation time and more accurate estimated empirical CGF.
+#' @param cgf.backend implementation used to calculate the empirical CGF. The default "rust" uses the native parallel backend; "R" uses the reference implementation.
+#' @param cgf.threads number of threads used by the Rust CGF backend. NULL uses the number of threads available to the process.
 #' @param ... Other arguments passed to function coxph(). For more details, please refer to package survival.
 #' @return an object with a class of "SPACox_NULL_Model".
 #' @examples
 #' # Please check help(SPACox) for a simulated example.
 #' @export
 #' @import survival
+#' @useDynLib SPACox, .registration=TRUE, .fixes="C_"
 SPACox_Null_Model = function(formula,
                              data=NULL,
                              pIDs=NULL,
                              gIDs=NULL,
                              range=c(-100,100),
                              length.out = 10000,
+                             cgf.backend = c("rust", "R"),
+                             cgf.threads = NULL,
                              ...)
 {
   Call = match.call()
+
+  cgf.backend = match.arg(cgf.backend)
 
   ### Fit a Cox model
   obj.coxph = coxph(formula, data=data, x=T, ...)
@@ -41,7 +48,9 @@ SPACox_Null_Model = function(formula,
 
   ### calculate empirical CGF for martingale residuals
   print("Start calculating empirical CGF for martingale residuals...")
-  cgf = SPACox_empirical_CGF(mresid, range, length.out)
+  cgf = SPACox_empirical_CGF(mresid, range, length.out,
+                             backend=cgf.backend,
+                             threads=cgf.threads)
 
   var.resid = var(mresid)
   row_to_genotype = if(is.null(p2g)) seq_along(pIDs) else as.integer(p2g)
@@ -57,6 +66,8 @@ SPACox_Null_Model = function(formula,
           cgf_n_total = cgf$n_total,
           cgf_n_zero = cgf$n_zero,
           cgf_resid_nonzero = cgf$resid_nonzero,
+          cgf_backend = cgf$backend,
+          cgf_threads = cgf$threads,
           Call = Call,
           obj.coxph = obj.coxph,
           tX = tX,
@@ -73,8 +84,15 @@ SPACox_Null_Model = function(formula,
   return(re)
 }
 
-SPACox_empirical_CGF = function(mresid, range, length.out)
+SPACox_empirical_CGF = function(mresid,
+                                range,
+                                length.out,
+                                backend=c("rust", "R"),
+                                threads=NULL)
 {
+  backend = match.arg(backend)
+  threads = SPACox_CGF_threads(threads)
+
   idx0 = qcauchy(1:length.out/(length.out+1))
   idx1 = idx0 * max(range) / max(idx0)
 
@@ -89,7 +107,62 @@ SPACox_empirical_CGF = function(mresid, range, length.out)
     cumul[,2] = 0
     cumul[,3] = 0
     cumul[,4] = 0
+  }else if(backend == "rust"){
+    rust.available = exists("C_spacox_empirical_cgf",
+                            envir=environment(SPACox_empirical_CGF),
+                            inherits=FALSE)
+    if(!rust.available){
+      warning("Rust CGF backend is not loaded; using the R reference backend.")
+      backend = "R"
+      cumul[,2:4] = SPACox_empirical_CGF_R(resid_nonzero,
+                                           n.zero,
+                                           n.total,
+                                           idx1)
+    }else{
+      cumul[,2:4] = .Call(C_spacox_empirical_cgf,
+                           resid_nonzero,
+                           idx1,
+                           as.double(n.zero),
+                           threads)
+    }
   }else{
+    cumul[,2:4] = SPACox_empirical_CGF_R(resid_nonzero,
+                                         n.zero,
+                                         n.total,
+                                         idx1)
+  }
+
+  list(cumul = cumul,
+       K_org_emp = approxfun(cumul[,1], cumul[,2], rule=2),
+       K_1_emp = approxfun(cumul[,1], cumul[,3], rule=2),
+       K_2_emp = approxfun(cumul[,1], cumul[,4], rule=2),
+       n_total = n.total,
+       n_zero = n.zero,
+       resid_nonzero = resid_nonzero,
+       backend = backend,
+       threads = if(backend == "rust") threads else 0L)
+}
+
+SPACox_CGF_threads = function(threads)
+{
+  if(is.null(threads))
+    return(0L)
+
+  if(length(threads) != 1 ||
+     !is.numeric(threads) ||
+     !is.finite(threads) ||
+     threads < 1 ||
+     threads != floor(threads) ||
+     threads > .Machine$integer.max)
+    stop("cgf.threads should be NULL or a positive integer.")
+
+  as.integer(threads)
+}
+
+SPACox_empirical_CGF_R = function(resid_nonzero, n.zero, n.total, idx1)
+{
+    length.out = length(idx1)
+    cumul = matrix(NA_real_, length.out, 3)
     max.outer = 5e6
     chunk.size = max(1, min(256, floor(max.outer/length(resid_nonzero))))
     next.print = 1000
@@ -131,24 +204,17 @@ SPACox_empirical_CGF = function(mresid, range, length.out)
              zero.weight[j] * weighted.mean[j]^2)/weight.sum[j]
       }
 
-      cumul[chunk.start:chunk.end, 2] = shift + log(weight.sum) - log(n.total)
-      cumul[chunk.start:chunk.end, 3] = weighted.mean
-      cumul[chunk.start:chunk.end, 4] = weighted.var
+      cumul[chunk.start:chunk.end, 1] = shift + log(weight.sum) - log(n.total)
+      cumul[chunk.start:chunk.end, 2] = weighted.mean
+      cumul[chunk.start:chunk.end, 3] = weighted.var
 
       while(chunk.end >= next.print){
         print(paste0("Complete ",next.print,"/",length.out,"."))
         next.print = next.print + 1000
       }
     }
-  }
 
-  list(cumul = cumul,
-       K_org_emp = approxfun(cumul[,1], cumul[,2], rule=2),
-       K_1_emp = approxfun(cumul[,1], cumul[,3], rule=2),
-       K_2_emp = approxfun(cumul[,1], cumul[,4], rule=2),
-       n_total = n.total,
-       n_zero = n.zero,
-       resid_nonzero = resid_nonzero)
+    cumul
 }
 
 SPACox_rowsum_vector = function(x, group, n.groups)
