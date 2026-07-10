@@ -14,6 +14,7 @@ SPACox_Null_Model(
   cgf.backend = c("rust", "rust-scalar", "R"),
   cgf.threads = NULL,
   y = FALSE,
+  cgf.strategy = c("lazy", "eager"),
   ...
 )
 }
@@ -35,6 +36,8 @@ SPACox_Null_Model(
 \item{cgf.threads}{number of threads used by the Rust CGF backend. NULL uses the number of threads available to the process.}
 
 \item{y}{whether to retain the response matrix in the fitted coxph object. The default FALSE reduces the memory retained by the null model.}
+
+\item{cgf.strategy}{CGF evaluation strategy. The default "lazy" evaluates only the points required by SPA and automatically materializes the full grid for dense workloads; "eager" calculates the full grid while fitting the null model.}
 
 \item{...}{Other arguments passed to function coxph(). For more details, please refer to package survival.}
 }

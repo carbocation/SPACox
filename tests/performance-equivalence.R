@@ -39,6 +39,9 @@ old_empirical_cgf = function(mresid, range, length.out) {
 }
 
 SPACox_empirical_CGF = get_spacox_fun("SPACox_empirical_CGF")
+SPACox_lazy_CGF = get_spacox_fun("SPACox_lazy_CGF")
+SPACox_lazy_CGF_prepare_workload = get_spacox_fun("SPACox_lazy_CGF_prepare_workload")
+SPACox_empirical_CGF_R = get_spacox_fun("SPACox_empirical_CGF_R")
 SPACox_group_values = get_spacox_fun("SPACox_group_values")
 GetProb_SPA = get_spacox_fun("GetProb_SPA")
 GetProb_SPA_grouped = get_spacox_fun("GetProb_SPA_grouped")
@@ -169,6 +172,51 @@ if(rust.available) {
   )
 }
 
+set.seed(23)
+lazy.resid = c(rnorm(1000), rep(0, 20))
+lazy.cgf = SPACox_lazy_CGF(
+  lazy.resid,
+  c(-100, 100),
+  10000,
+  backend="R"
+)
+lazy.t = c(-3, -0.25, 0, 0.5, 4)
+lazy.reference = SPACox_empirical_CGF_R(
+  lazy.resid[lazy.resid != 0],
+  sum(lazy.resid == 0),
+  length(lazy.resid),
+  lazy.t
+)
+lazy.values = cbind(
+  lazy.cgf$K_org_emp(lazy.t),
+  lazy.cgf$K_1_emp(lazy.t),
+  lazy.cgf$K_2_emp(lazy.t)
+)
+
+assert_true(
+  isTRUE(all.equal(lazy.values, lazy.reference, tolerance=1e-12, check.attributes=FALSE)),
+  "lazy direct CGF evaluation should match the exact reference implementation"
+)
+assert_true(lazy.cgf$state$mode == "direct", "a sparse lazy CGF request should use direct evaluation")
+assert_true(lazy.cgf$state$direct_points == length(lazy.t), "reusing a cached direct request should not add work")
+assert_true(lazy.cgf$state$grid_builds == 0, "a sparse lazy CGF request should not build the grid")
+
+dense.t = seq(-1, 1, length.out=257)
+dense.values = lazy.cgf$K_1_emp(dense.t)
+assert_true(length(dense.values) == length(dense.t), "dense lazy CGF requests should preserve their length")
+assert_true(lazy.cgf$state$mode == "hybrid", "a dense request should add a grid without changing sparse direct evaluation")
+assert_true(lazy.cgf$state$grid_builds == 1, "the lazy CGF grid should be built once")
+invisible(lazy.cgf$K_2_emp(dense.t))
+assert_true(lazy.cgf$state$grid_builds == 1, "the lazy CGF grid should be reused")
+
+workload.cgf = SPACox_lazy_CGF(lazy.resid, c(-100, 100), 1000, backend="R")
+SPACox_lazy_CGF_prepare_workload(list(cgf_state=workload.cgf$state), 2)
+assert_true(workload.cgf$state$sparse_mode == "grid", "a large workload should select grid evaluation")
+assert_true(workload.cgf$state$grid_builds == 0, "a selected grid should remain deferred until SPA is needed")
+invisible(workload.cgf$K_1_emp(c(-0.1, 0.1)))
+assert_true(workload.cgf$state$mode == "grid", "the first SPA request should build a selected grid")
+assert_true(workload.cgf$state$grid_builds == 1, "workload fallback should build one grid")
+
 set.seed(21)
 n.subjects = 7
 n.intervals = 4
@@ -191,8 +239,21 @@ obj.null = SPACox_Null_Model(
   data=dat,
   pIDs=as.character(dat$id),
   gIDs=rownames(geno),
-  length.out=200
+  length.out=10000
 )
+
+assert_true(obj.null$cgf_strategy == "lazy", "SPACox null models should use lazy CGF evaluation by default")
+assert_true(obj.null$cgf_state$mode == "deferred", "fitting a lazy null model should not calculate the CGF")
+
+normal.only = SPACox(
+  obj.null,
+  geno,
+  Cutoff=Inf,
+  min.maf=0,
+  missing.cutoff=1
+)
+assert_true(nrow(normal.only) == ncol(geno), "normal-only SPACox should return one row per variant")
+assert_true(obj.null$cgf_state$mode == "deferred", "normal-only variants should not calculate the CGF")
 
 assert_true(
   is.null(obj.null$obj.coxph$y),
@@ -205,6 +266,7 @@ obj.null.with.y = SPACox_Null_Model(
   pIDs=as.character(dat$id),
   gIDs=rownames(geno),
   length.out=20,
+  cgf.strategy="eager",
   y=TRUE
 )
 
@@ -212,6 +274,8 @@ assert_true(
   !is.null(obj.null.with.y$obj.coxph$y),
   "SPACox null models should retain the Cox response matrix when y=TRUE"
 )
+assert_true(obj.null.with.y$cgf_strategy == "eager", "eager CGF evaluation should remain available")
+assert_true(is.null(obj.null.with.y$cgf_state), "eager CGF evaluation should not create lazy state")
 
 g.row = g.subject[obj.null$row_to_genotype]
 MAF = mean(g.subject, na.rm=TRUE)/2
@@ -240,6 +304,31 @@ G1N0 = -2*MAF/sqrt(S.var.row)
 G1norm.subject = (g.subject - 2*MAF)/sqrt(S.var.grouped)
 G1.grouped = SPACox_group_values(G1norm.subject, obj.null$row_count_by_genotype)
 
+p.direct.upper = GetProb_SPA_grouped(obj.null, G1.grouped$values, G1.grouped$counts, abs(z1), lower.tail=FALSE)
+p.direct.lower = GetProb_SPA_grouped(obj.null, G1.grouped$values, G1.grouped$counts, -abs(z1), lower.tail=TRUE)
+assert_true(obj.null$cgf_state$mode == "direct", "grouped SPA should use exact direct CGF evaluation")
+assert_true(obj.null$cgf_state$grid_builds == 0, "a small grouped SPA workload should not build the grid")
+
+default.grid.cgf = SPACox_empirical_CGF(obj.null$resid, c(-100, 100), 10000, backend="R")
+obj.null.default.grid = obj.null
+obj.null.default.grid$K_org_emp = default.grid.cgf$K_org_emp
+obj.null.default.grid$K_1_emp = default.grid.cgf$K_1_emp
+obj.null.default.grid$K_2_emp = default.grid.cgf$K_2_emp
+p.default.grid.upper = GetProb_SPA_grouped(
+  obj.null.default.grid,
+  G1.grouped$values,
+  G1.grouped$counts,
+  abs(z1),
+  lower.tail=FALSE
+)
+p.default.grid.lower = GetProb_SPA_grouped(
+  obj.null.default.grid,
+  G1.grouped$values,
+  G1.grouped$counts,
+  -abs(z1),
+  lower.tail=TRUE
+)
+
 p.old.upper = GetProb_SPA(obj.null, G1N1, G1N0, N1set, N0, abs(z1), lower.tail=FALSE)
 p.old.lower = GetProb_SPA(obj.null, G1N1, G1N0, N1set, N0, -abs(z1), lower.tail=TRUE)
 p.new.upper = GetProb_SPA_grouped(obj.null, G1.grouped$values, G1.grouped$counts, abs(z1), lower.tail=FALSE)
@@ -252,4 +341,12 @@ assert_true(
 assert_true(
   isTRUE(all.equal(p.new.lower, p.old.lower, tolerance=1e-10, check.attributes=FALSE)),
   "grouped lower-tail SPA should match ungrouped SPA"
+)
+assert_true(
+  isTRUE(all.equal(p.direct.upper, p.default.grid.upper, tolerance=1e-5, check.attributes=FALSE)),
+  "direct upper-tail SPA should agree with the default interpolation grid"
+)
+assert_true(
+  isTRUE(all.equal(p.direct.lower, p.default.grid.lower, tolerance=1e-5, check.attributes=FALSE)),
+  "direct lower-tail SPA should agree with the default interpolation grid"
 )

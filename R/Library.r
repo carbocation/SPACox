@@ -1,6 +1,6 @@
 #' Fits a NULL model for SPACox
 #'
-#' Fits a null Cox proportional hazards model and then calculates the empirical cumulant generation function (CGF) of the martingale residuals
+#' Fits a null Cox proportional hazards model and prepares the empirical cumulant generation function (CGF) of the martingale residuals
 #' @param formula a formula to be passed to function coxph(). For more details, please refer to package survival.
 #' @param data a data.frame in which to interpret the variables named in the formula
 #' @param pIDs a character vector of subject IDs. NOTE: its order should be the same as the subjects order in the formula.
@@ -10,6 +10,7 @@
 #' @param cgf.backend implementation used to calculate the empirical CGF. The default "rust" uses AVX2 SIMD when available and otherwise falls back to the original scalar native kernel; "rust-scalar" forces the scalar native kernel; "R" uses the reference implementation.
 #' @param cgf.threads number of threads used by the Rust CGF backend. NULL uses the number of threads available to the process.
 #' @param y whether to retain the response matrix in the fitted coxph object. The default FALSE reduces the memory retained by the null model.
+#' @param cgf.strategy CGF evaluation strategy. The default "lazy" evaluates only the points required by SPA and automatically materializes the full grid for dense workloads; "eager" calculates the full grid while fitting the null model.
 #' @param ... Other arguments passed to function coxph(). For more details, please refer to package survival.
 #' @return an object with a class of "SPACox_NULL_Model".
 #' @examples
@@ -26,11 +27,13 @@ SPACox_Null_Model = function(formula,
                              cgf.backend = c("rust", "rust-scalar", "R"),
                              cgf.threads = NULL,
                              y = FALSE,
+                             cgf.strategy = c("lazy", "eager"),
                              ...)
 {
   Call = match.call()
 
   cgf.backend = match.arg(cgf.backend)
+  cgf.strategy = match.arg(cgf.strategy)
 
   ### Fit a Cox model
   obj.coxph = coxph(formula, data=data, x=TRUE, y=y, ...)
@@ -48,11 +51,19 @@ SPACox_Null_Model = function(formula,
   X.invXX = X %*% solve(t(X)%*%X)
   tX = t(X)
 
-  ### calculate empirical CGF for martingale residuals
-  print("Start calculating empirical CGF for martingale residuals...")
-  cgf = SPACox_empirical_CGF(mresid, range, length.out,
-                             backend=cgf.backend,
-                             threads=cgf.threads)
+  ### Prepare the empirical CGF for martingale residuals. Lazy evaluation
+  ### avoids calculating a dense grid when no score statistic requires SPA.
+  if(cgf.strategy == "lazy") {
+    print("Deferring empirical CGF calculation until SPA is required...")
+    cgf = SPACox_lazy_CGF(mresid, range, length.out,
+                          backend=cgf.backend,
+                          threads=cgf.threads)
+  } else {
+    print("Start calculating empirical CGF for martingale residuals...")
+    cgf = SPACox_empirical_CGF(mresid, range, length.out,
+                               backend=cgf.backend,
+                               threads=cgf.threads)
+  }
 
   var.resid = var(mresid)
   row_to_genotype = if(is.null(p2g)) seq_along(pIDs) else as.integer(p2g)
@@ -71,6 +82,8 @@ SPACox_Null_Model = function(formula,
           cgf_backend = cgf$backend,
           cgf_kernel = cgf$kernel,
           cgf_threads = cgf$threads,
+          cgf_strategy = cgf.strategy,
+          cgf_state = cgf$state,
           Call = Call,
           obj.coxph = obj.coxph,
           tX = tX,
@@ -156,6 +169,182 @@ SPACox_empirical_CGF = function(mresid,
        backend = backend,
        kernel = kernel,
        threads = if(backend %in% c("rust", "rust-scalar")) threads else 0L)
+}
+
+SPACox_lazy_CGF = function(mresid,
+                           range,
+                           length.out,
+                           backend=c("rust", "rust-scalar", "R"),
+                           threads=NULL)
+{
+  backend = match.arg(backend)
+  threads = SPACox_CGF_threads(threads)
+
+  if(length(length.out) != 1 ||
+     !is.numeric(length.out) ||
+     !is.finite(length.out) ||
+     length.out < 2 ||
+     length.out != floor(length.out))
+    stop("length.out should be an integer greater than or equal to 2.")
+
+  n.total = length(mresid)
+  resid_nonzero = mresid[mresid != 0]
+  n.zero = n.total - length(resid_nonzero)
+  kernel = if(backend == "R") "R" else "scalar"
+
+  if(backend %in% c("rust", "rust-scalar")) {
+    rust.available = exists("C_spacox_empirical_cgf",
+                            envir=environment(SPACox_lazy_CGF),
+                            inherits=FALSE)
+    if(!rust.available) {
+      warning("Rust CGF backend is not loaded; using the R reference backend.")
+      backend = "R"
+      kernel = "R"
+      threads = 0L
+    } else if(backend == "rust") {
+      simd.binding.available = exists("C_spacox_cgf_simd_available",
+                                      envir=environment(SPACox_lazy_CGF),
+                                      inherits=FALSE)
+      if(simd.binding.available && isTRUE(.Call(C_spacox_cgf_simd_available)))
+        kernel = "avx2"
+    }
+  }
+
+  state = new.env(parent=emptyenv())
+  state$resid_nonzero = resid_nonzero
+  state$n_zero = n.zero
+  state$n_total = n.total
+  state$range = as.double(range)
+  state$length_out = as.integer(length.out)
+  state$backend = backend
+  state$kernel = kernel
+  state$threads = threads
+  state$mode = "deferred"
+  state$direct_points = 0L
+  state$grid_builds = 0L
+  state$grid = NULL
+  state$last_t = NULL
+  state$last_values = NULL
+  state$sparse_mode = "direct"
+  state$workload_selected = FALSE
+
+  # Use roughly 10% of an eager grid as the sparse-workload budget when the
+  # variant matrix is first seen. A single dense request uses the grid.
+  state$direct_point_limit = max(1L, as.integer(floor(length.out/10)))
+  state$direct_request_limit = min(256L, state$direct_point_limit)
+
+  evaluate = function(t) SPACox_lazy_CGF_evaluate(state, t)
+
+  list(cumul = NULL,
+       K_org_emp = function(t) evaluate(t)[,1L],
+       K_1_emp = function(t) evaluate(t)[,2L],
+       K_2_emp = function(t) evaluate(t)[,3L],
+       n_total = n.total,
+       n_zero = n.zero,
+       resid_nonzero = resid_nonzero,
+       backend = backend,
+       kernel = kernel,
+       threads = threads,
+       state = state)
+}
+
+SPACox_lazy_CGF_values = function(state, t)
+{
+  if(length(t) == 0)
+    return(matrix(numeric(0), nrow=0, ncol=3))
+
+  if(length(state$resid_nonzero) == 0)
+    return(matrix(0, nrow=length(t), ncol=3))
+
+  if(state$backend %in% c("rust", "rust-scalar")) {
+    return(.Call(C_spacox_empirical_cgf,
+                 state$resid_nonzero,
+                 t,
+                 as.double(state$n_zero),
+                 state$threads,
+                 identical(state$backend, "rust")))
+  }
+
+  SPACox_empirical_CGF_R(state$resid_nonzero,
+                         state$n_zero,
+                         state$n_total,
+                         t)
+}
+
+SPACox_lazy_CGF_build_grid = function(state)
+{
+  if(!is.null(state$grid))
+    return(invisible(NULL))
+
+  message("Materializing empirical CGF grid for a dense SPA workload...")
+  idx0 = qcauchy(seq_len(state$length_out)/(state$length_out+1))
+  idx1 = idx0 * max(state$range) / max(idx0)
+  values = SPACox_lazy_CGF_values(state, idx1)
+  cumul = cbind(idx1, values)
+
+  state$grid = list(
+    cumul = cumul,
+    K_org_emp = approxfun(idx1, values[,1L], rule=2),
+    K_1_emp = approxfun(idx1, values[,2L], rule=2),
+    K_2_emp = approxfun(idx1, values[,3L], rule=2)
+  )
+  state$mode = if(state$sparse_mode == "grid") "grid" else "hybrid"
+  state$grid_builds = state$grid_builds + 1L
+  state$last_t = NULL
+  state$last_values = NULL
+  invisible(NULL)
+}
+
+SPACox_lazy_CGF_evaluate = function(state, t)
+{
+  if(!is.numeric(t) || any(!is.finite(t)))
+    stop("CGF evaluation points should be finite numeric values.")
+
+  t = as.double(t)
+  if(length(t) == 0)
+    return(matrix(numeric(0), nrow=0, ncol=3))
+
+  # Match the eager grid's rule=2 behavior outside the requested domain.
+  t = pmax(state$range[1L], pmin(state$range[2L], t))
+
+  if(identical(t, state$last_t))
+    return(state$last_values)
+
+  use.grid = length(t) > state$direct_request_limit || state$sparse_mode == "grid"
+  if(use.grid && is.null(state$grid))
+    SPACox_lazy_CGF_build_grid(state)
+
+  if(!use.grid) {
+    values = SPACox_lazy_CGF_values(state, t)
+    state$direct_points = state$direct_points + length(t)
+    state$mode = if(is.null(state$grid)) "direct" else "hybrid"
+  } else {
+    values = cbind(state$grid$K_org_emp(t),
+                   state$grid$K_1_emp(t),
+                   state$grid$K_2_emp(t))
+  }
+
+  state$last_t = t
+  state$last_values = values
+  values
+}
+
+SPACox_lazy_CGF_prepare_workload = function(obj.null, n.variants)
+{
+  state = obj.null$cgf_state
+  if(is.null(state) || state$workload_selected)
+    return(invisible(NULL))
+
+  # A grouped binary SPA variant typically requests about 40--50 exact CGF
+  # points across both tails. Use a conservative allowance while deciding the
+  # strategy before any variant is evaluated, so results cannot depend on
+  # variant order.
+  estimated.points = 64 * as.double(n.variants)
+  if(state$direct_points == 0 && estimated.points > state$direct_point_limit)
+    state$sparse_mode = "grid"
+  state$workload_selected = TRUE
+
+  invisible(NULL)
 }
 
 SPACox_CGF_threads = function(threads)
@@ -359,6 +548,7 @@ SPACox = function(obj.null,
 
   ### Prepare the main output data frame
   n.Geno = ncol(Geno.mtx)
+  SPACox_lazy_CGF_prepare_workload(obj.null, n.Geno)
   output = matrix(NA, n.Geno, 7)
   colnames(output) = c("MAF","missing.rate","p.value.spa","p.value.norm","Stat","Var","z")
   rownames(output) = colnames(Geno.mtx)
@@ -624,9 +814,8 @@ K_org = function(t, G2NB, G2NA, NBset, N0, obj.null){
   out = rep(0,n.t)
   for(i in 1:n.t){
     t1 = t[i]
-    t2NA = t1*G2NA
-    t2NB = t1*G2NB
-    out[i] = N0*obj.null$K_org_emp(t2NA) + sum(obj.null$K_org_emp(t2NB))
+    values = obj.null$K_org_emp(c(t1*G2NA, t1*G2NB))
+    out[i] = N0*values[1L] + sum(values[-1L])
   }
   return(out)
 }
@@ -650,9 +839,8 @@ K1_adj = function(t, G2NB, G2NA, NBset, N0, q2, obj.null)
 
   for(i in 1:n.t){
     t1 = t[i]
-    t2NA = t1*G2NA
-    t2NB = t1*G2NB
-    out[i] = N0*G2NA*obj.null$K_1_emp(t2NA) + sum(G2NB*obj.null$K_1_emp(t2NB)) - q2
+    values = obj.null$K_1_emp(c(t1*G2NA, t1*G2NB))
+    out[i] = N0*G2NA*values[1L] + sum(G2NB*values[-1L]) - q2
   }
   return(out)
 }
@@ -677,9 +865,8 @@ K2 = function(t, G2NB, G2NA, NBset, N0, obj.null)
 
   for(i in 1:n.t){
     t1 = t[i]
-    t2NA = t1*G2NA
-    t2NB = t1*G2NB
-    out[i] = N0*G2NA^2*obj.null$K_2_emp(t2NA) + sum(G2NB^2*obj.null$K_2_emp(t2NB))
+    values = obj.null$K_2_emp(c(t1*G2NA, t1*G2NB))
+    out[i] = N0*G2NA^2*values[1L] + sum(G2NB^2*values[-1L])
   }
   return(out)
 }

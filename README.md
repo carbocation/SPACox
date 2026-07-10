@@ -21,6 +21,12 @@ process. Other processors retain the original scalar kernel. The thread count
 can be limited explicitly, and the scalar Rust and stable R implementations
 remain available for numerical comparisons:
 
+CGF evaluation is lazy by default. Score statistics that use the normal
+approximation incur no CGF calculation. Sparse SPA workloads evaluate the
+required CGF points exactly; larger workloads automatically build and reuse the
+traditional interpolation grid. Set `cgf.strategy = "eager"` to build that grid
+while fitting the null model.
+
 ```{r}
 obj.null = SPACox_Null_Model(
   survival::Surv(time, event) ~ Cov1 + Cov2,
