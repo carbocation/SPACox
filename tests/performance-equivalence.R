@@ -130,27 +130,27 @@ if(rust.available) {
   rust.reference = SPACox_empirical_CGF(
     rust.resid,
     c(-100, 100),
-    201,
+    513,
     backend="R"
   )
   rust.single = SPACox_empirical_CGF(
     rust.resid,
     c(-100, 100),
-    201,
+    513,
     backend="rust",
     threads=1
   )
   rust.parallel = SPACox_empirical_CGF(
     rust.resid,
     c(-100, 100),
-    201,
+    513,
     backend="rust",
     threads=2
   )
   rust.scalar = SPACox_empirical_CGF(
     rust.resid,
     c(-100, 100),
-    201,
+    513,
     backend="rust-scalar",
     threads=1
   )
@@ -216,6 +216,56 @@ assert_true(workload.cgf$state$grid_builds == 0, "a selected grid should remain 
 invisible(workload.cgf$K_1_emp(c(-0.1, 0.1)))
 assert_true(workload.cgf$state$mode == "grid", "the first SPA request should build a selected grid")
 assert_true(workload.cgf$state$grid_builds == 1, "workload fallback should build one grid")
+
+continued.workload.cgf = SPACox_lazy_CGF(lazy.resid, c(-100, 100), 1000, backend="R")
+invisible(continued.workload.cgf$K_1_emp(c(-0.1, 0.1)))
+SPACox_lazy_CGF_prepare_workload(
+  list(cgf_state=continued.workload.cgf$state),
+  1000000
+)
+assert_true(
+  continued.workload.cgf$state$sparse_mode == "grid",
+  "a dense workload should select the grid even after prior direct evaluation"
+)
+assert_true(
+  continued.workload.cgf$state$workload_selected,
+  "dense workload selection should be recorded after prior direct evaluation"
+)
+
+upgraded.workload.cgf = SPACox_lazy_CGF(lazy.resid, c(-100, 100), 10000, backend="R")
+SPACox_lazy_CGF_prepare_workload(list(cgf_state=upgraded.workload.cgf$state), 1)
+assert_true(
+  upgraded.workload.cgf$state$sparse_mode == "direct",
+  "a small initial matrix workload should retain direct evaluation"
+)
+SPACox_lazy_CGF_prepare_workload(list(cgf_state=upgraded.workload.cgf$state), 1000000)
+assert_true(
+  upgraded.workload.cgf$state$sparse_mode == "grid",
+  "a later dense workload should upgrade a prior small matrix workload to the grid"
+)
+
+reversed.range.cgf = SPACox_lazy_CGF(
+  lazy.resid,
+  c(100, -100),
+  1000,
+  backend="R"
+)
+forward.range.cgf = SPACox_lazy_CGF(
+  lazy.resid,
+  c(-100, 100),
+  1000,
+  backend="R"
+)
+range.test.points = c(-1, 0, 1)
+assert_true(
+  isTRUE(all.equal(
+    reversed.range.cgf$K_org_emp(range.test.points),
+    forward.range.cgf$K_org_emp(range.test.points),
+    tolerance=0,
+    check.attributes=FALSE
+  )),
+  "reversed symmetric ranges should retain the pre-Rust CGF behavior"
+)
 
 set.seed(21)
 n.subjects = 7

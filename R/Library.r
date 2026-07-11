@@ -214,7 +214,10 @@ SPACox_lazy_CGF = function(mresid,
   state$resid_nonzero = resid_nonzero
   state$n_zero = n.zero
   state$n_total = n.total
-  state$range = as.double(range)
+  # The eager implementation historically treated c(a, -a) and c(-a, a)
+  # identically because it used max(range) to construct the symmetric grid.
+  # Keep that behavior while storing ordered bounds for lazy clamping.
+  state$range = sort(as.double(range))
   state$length_out = as.integer(length.out)
   state$backend = backend
   state$kernel = kernel
@@ -332,7 +335,7 @@ SPACox_lazy_CGF_evaluate = function(state, t)
 SPACox_lazy_CGF_prepare_workload = function(obj.null, n.variants)
 {
   state = obj.null$cgf_state
-  if(is.null(state) || state$workload_selected)
+  if(is.null(state))
     return(invisible(NULL))
 
   # A grouped binary SPA variant typically requests about 40--50 exact CGF
@@ -340,7 +343,7 @@ SPACox_lazy_CGF_prepare_workload = function(obj.null, n.variants)
   # strategy before any variant is evaluated, so results cannot depend on
   # variant order.
   estimated.points = 64 * as.double(n.variants)
-  if(state$direct_points == 0 && estimated.points > state$direct_point_limit)
+  if(estimated.points > state$direct_point_limit)
     state$sparse_mode = "grid"
   state$workload_selected = TRUE
 
