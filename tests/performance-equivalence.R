@@ -41,6 +41,7 @@ old_empirical_cgf = function(mresid, range, length.out) {
 SPACox_empirical_CGF = get_spacox_fun("SPACox_empirical_CGF")
 SPACox_lazy_CGF = get_spacox_fun("SPACox_lazy_CGF")
 SPACox_lazy_CGF_prepare_workload = get_spacox_fun("SPACox_lazy_CGF_prepare_workload")
+SPACox_prepare_analysis_CGF = get_spacox_fun("SPACox_prepare_analysis_CGF")
 SPACox_empirical_CGF_R = get_spacox_fun("SPACox_empirical_CGF_R")
 SPACox_group_values = get_spacox_fun("SPACox_group_values")
 GetProb_SPA = get_spacox_fun("GetProb_SPA")
@@ -294,6 +295,22 @@ obj.null = SPACox_Null_Model(
 
 assert_true(obj.null$cgf_strategy == "lazy", "SPACox null models should use lazy CGF evaluation by default")
 assert_true(obj.null$cgf_state$mode == "deferred", "fitting a lazy null model should not calculate the CGF")
+assert_true(!is.environment(obj.null$cgf_state), "the public null model should not expose mutable CGF state")
+
+obj.null.alias = obj.null
+prepared.alias = SPACox_prepare_analysis_CGF(obj.null.alias, 1000)
+assert_true(is.environment(prepared.alias$cgf_state), "an analysis should receive private mutable CGF state")
+assert_true(prepared.alias$cgf_state$sparse_mode == "grid", "a private dense analysis should select the grid")
+assert_true(obj.null$cgf_state$mode == "deferred", "preparing an alias should not mutate the original null model")
+assert_true(obj.null.alias$cgf_state$mode == "deferred", "preparing an alias should not mutate the copied null model")
+invisible(prepared.alias$K_1_emp(c(-0.1, 0.1)))
+assert_true(prepared.alias$cgf_state$grid_builds == 1, "the private analysis should cache its grid")
+assert_true(obj.null$cgf_state$grid_builds == 0, "private grid caching should not leak to the original null model")
+reused.alias = SPACox_prepare_analysis_CGF(prepared.alias, 1)
+assert_true(
+  identical(reused.alias$cgf_state, prepared.alias$cgf_state),
+  "chunked analyses should reuse the same private evaluator"
+)
 
 normal.only = SPACox(
   obj.null,
@@ -304,6 +321,32 @@ normal.only = SPACox(
 )
 assert_true(nrow(normal.only) == ncol(geno), "normal-only SPACox should return one row per variant")
 assert_true(obj.null$cgf_state$mode == "deferred", "normal-only variants should not calculate the CGF")
+
+spa.matrix = SPACox(
+  obj.null.alias,
+  geno,
+  Cutoff=0,
+  min.maf=0,
+  missing.cutoff=1
+)
+spa.single = SPACox.one.SNP(
+  g.subject,
+  obj.null,
+  Cutoff=0,
+  min.maf=0,
+  missing.cutoff=1
+)
+assert_true(
+  isTRUE(all.equal(
+    as.numeric(spa.matrix[1,]),
+    spa.single,
+    tolerance=1e-10,
+    check.attributes=FALSE
+  )),
+  "matrix and one-SNP analyses should agree with private lazy evaluators"
+)
+assert_true(obj.null$cgf_state$mode == "deferred", "one-SNP analysis should leave the original model immutable")
+assert_true(obj.null.alias$cgf_state$mode == "deferred", "matrix analysis should leave an aliased model immutable")
 
 assert_true(
   is.null(obj.null$obj.coxph$y),
@@ -326,6 +369,36 @@ assert_true(
 )
 assert_true(obj.null.with.y$cgf_strategy == "eager", "eager CGF evaluation should remain available")
 assert_true(is.null(obj.null.with.y$cgf_state), "eager CGF evaluation should not create lazy state")
+
+unit.weights = rep(1, nrow(dat))
+positional.arguments = list(
+  Surv(start, stop, event) ~ x,
+  dat,
+  as.character(dat$id),
+  rownames(geno),
+  c(-100, 100),
+  20,
+  unit.weights
+)
+positional.arguments$cgf.backend = "R"
+positional.arguments$cgf.strategy = "eager"
+obj.null.positional.weights = do.call(SPACox_Null_Model, positional.arguments)
+
+named.arguments = positional.arguments[1:6]
+names(named.arguments) = c("formula", "data", "pIDs", "gIDs", "range", "length.out")
+named.arguments$weights = unit.weights
+named.arguments$cgf.backend = "R"
+named.arguments$cgf.strategy = "eager"
+obj.null.named.weights = do.call(SPACox_Null_Model, named.arguments)
+assert_true(
+  isTRUE(all.equal(
+    obj.null.positional.weights$resid,
+    obj.null.named.weights$resid,
+    tolerance=0,
+    check.attributes=FALSE
+  )),
+  "positional coxph arguments should continue to pass through the null-model wrapper"
+)
 
 g.row = g.subject[obj.null$row_to_genotype]
 MAF = mean(g.subject, na.rm=TRUE)/2
@@ -356,8 +429,8 @@ G1.grouped = SPACox_group_values(G1norm.subject, obj.null$row_count_by_genotype)
 
 p.direct.upper = GetProb_SPA_grouped(obj.null, G1.grouped$values, G1.grouped$counts, abs(z1), lower.tail=FALSE)
 p.direct.lower = GetProb_SPA_grouped(obj.null, G1.grouped$values, G1.grouped$counts, -abs(z1), lower.tail=TRUE)
-assert_true(obj.null$cgf_state$mode == "direct", "grouped SPA should use exact direct CGF evaluation")
-assert_true(obj.null$cgf_state$grid_builds == 0, "a small grouped SPA workload should not build the grid")
+assert_true(obj.null$cgf_state$mode == "deferred", "direct helper evaluation should not mutate the public null model")
+assert_true(obj.null$cgf_state$grid_builds == 0, "direct helper evaluation should not cache state on the public null model")
 
 default.grid.cgf = SPACox_empirical_CGF(obj.null$resid, c(-100, 100), 10000, backend="R")
 obj.null.default.grid = obj.null

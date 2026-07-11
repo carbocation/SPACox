@@ -11,11 +11,11 @@ SPACox_Null_Model(
   gIDs = NULL,
   range = c(-100, 100),
   length.out = 10000,
+  ...,
   cgf.backend = c("rust", "rust-scalar", "R"),
   cgf.threads = NULL,
   y = FALSE,
-  cgf.strategy = c("lazy", "eager"),
-  ...
+  cgf.strategy = c("lazy", "eager")
 )
 }
 \arguments{
@@ -31,6 +31,8 @@ SPACox_Null_Model(
 
 \item{length.out}{a positive integer (default: 10000) for empirical CGF. Larger length.out corresponds to longer calculation time and more accurate estimated empirical CGF.}
 
+\item{...}{Other arguments passed to function coxph(). For more details, please refer to package survival.}
+
 \item{cgf.backend}{implementation used to calculate the empirical CGF. The default "rust" uses AVX2 SIMD when available and otherwise falls back to the original scalar native kernel; "rust-scalar" forces the scalar native kernel; "R" uses the reference implementation.}
 
 \item{cgf.threads}{number of threads used by the Rust CGF backend. NULL uses the number of threads available to the process.}
@@ -38,8 +40,6 @@ SPACox_Null_Model(
 \item{y}{whether to retain the response matrix in the fitted coxph object. The default FALSE reduces the memory retained by the null model.}
 
 \item{cgf.strategy}{CGF evaluation strategy. The default "lazy" evaluates only the points required by SPA and automatically materializes the full grid for dense workloads; "eager" calculates the full grid while fitting the null model.}
-
-\item{...}{Other arguments passed to function coxph(). For more details, please refer to package survival.}
 }
 \value{
 an object with a class of "SPACox_NULL_Model".

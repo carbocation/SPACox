@@ -7,11 +7,11 @@
 #' @param gIDs a character vector of subject IDs. NOTE: its order should be the same as the subjects order of the Geno.mtx (i.e. the input of the function SPACox()).
 #' @param range a two-element numeric vector (default: c(-100,100)) to specify the domain of the empirical CGF.
 #' @param length.out a positive integer (default: 10000) for empirical CGF. Larger length.out corresponds to longer calculation time and more accurate estimated empirical CGF.
+#' @param ... Other arguments passed to function coxph(). For more details, please refer to package survival.
 #' @param cgf.backend implementation used to calculate the empirical CGF. The default "rust" uses AVX2 SIMD when available and otherwise falls back to the original scalar native kernel; "rust-scalar" forces the scalar native kernel; "R" uses the reference implementation.
 #' @param cgf.threads number of threads used by the Rust CGF backend. NULL uses the number of threads available to the process.
 #' @param y whether to retain the response matrix in the fitted coxph object. The default FALSE reduces the memory retained by the null model.
 #' @param cgf.strategy CGF evaluation strategy. The default "lazy" evaluates only the points required by SPA and automatically materializes the full grid for dense workloads; "eager" calculates the full grid while fitting the null model.
-#' @param ... Other arguments passed to function coxph(). For more details, please refer to package survival.
 #' @return an object with a class of "SPACox_NULL_Model".
 #' @examples
 #' # Please check help(SPACox) for a simulated example.
@@ -24,11 +24,11 @@ SPACox_Null_Model = function(formula,
                              gIDs=NULL,
                              range=c(-100,100),
                              length.out = 10000,
+                             ...,
                              cgf.backend = c("rust", "rust-scalar", "R"),
                              cgf.threads = NULL,
                              y = FALSE,
-                             cgf.strategy = c("lazy", "eager"),
-                             ...)
+                             cgf.strategy = c("lazy", "eager"))
 {
   Call = match.call()
 
@@ -53,11 +53,13 @@ SPACox_Null_Model = function(formula,
 
   ### Prepare the empirical CGF for martingale residuals. Lazy evaluation
   ### avoids calculating a dense grid when no score statistic requires SPA.
+  cgf.spec = NULL
   if(cgf.strategy == "lazy") {
     print("Deferring empirical CGF calculation until SPA is required...")
-    cgf = SPACox_lazy_CGF(mresid, range, length.out,
-                          backend=cgf.backend,
-                          threads=cgf.threads)
+    cgf.spec = SPACox_lazy_CGF_spec(mresid, range, length.out,
+                                    backend=cgf.backend,
+                                    threads=cgf.threads)
+    cgf = SPACox_lazy_CGF_public(cgf.spec)
   } else {
     print("Start calculating empirical CGF for martingale residuals...")
     cgf = SPACox_empirical_CGF(mresid, range, length.out,
@@ -84,6 +86,7 @@ SPACox_Null_Model = function(formula,
           cgf_threads = cgf$threads,
           cgf_strategy = cgf.strategy,
           cgf_state = cgf$state,
+          cgf_spec = cgf.spec,
           Call = Call,
           obj.coxph = obj.coxph,
           tX = tX,
@@ -177,6 +180,16 @@ SPACox_lazy_CGF = function(mresid,
                            backend=c("rust", "rust-scalar", "R"),
                            threads=NULL)
 {
+  spec = SPACox_lazy_CGF_spec(mresid, range, length.out, backend, threads)
+  SPACox_lazy_CGF_from_spec(spec)
+}
+
+SPACox_lazy_CGF_spec = function(mresid,
+                                range,
+                                length.out,
+                                backend=c("rust", "rust-scalar", "R"),
+                                threads=NULL)
+{
   backend = match.arg(backend)
   threads = SPACox_CGF_threads(threads)
 
@@ -210,18 +223,24 @@ SPACox_lazy_CGF = function(mresid,
     }
   }
 
+  direct.point.limit = max(1L, as.integer(floor(length.out/10)))
+  list(resid_nonzero = resid_nonzero,
+       n_zero = n.zero,
+       n_total = n.total,
+       range = sort(as.double(range)),
+       length_out = as.integer(length.out),
+       backend = backend,
+       kernel = kernel,
+       threads = threads,
+       direct_point_limit = direct.point.limit,
+       direct_request_limit = min(256L, direct.point.limit))
+}
+
+SPACox_lazy_CGF_from_spec = function(spec)
+{
   state = new.env(parent=emptyenv())
-  state$resid_nonzero = resid_nonzero
-  state$n_zero = n.zero
-  state$n_total = n.total
-  # The eager implementation historically treated c(a, -a) and c(-a, a)
-  # identically because it used max(range) to construct the symmetric grid.
-  # Keep that behavior while storing ordered bounds for lazy clamping.
-  state$range = sort(as.double(range))
-  state$length_out = as.integer(length.out)
-  state$backend = backend
-  state$kernel = kernel
-  state$threads = threads
+  for(name in names(spec))
+    state[[name]] = spec[[name]]
   state$mode = "deferred"
   state$direct_points = 0L
   state$grid_builds = 0L
@@ -231,24 +250,64 @@ SPACox_lazy_CGF = function(mresid,
   state$sparse_mode = "direct"
   state$workload_selected = FALSE
 
-  # Use roughly 10% of an eager grid as the sparse-workload budget when the
-  # variant matrix is first seen. A single dense request uses the grid.
-  state$direct_point_limit = max(1L, as.integer(floor(length.out/10)))
-  state$direct_request_limit = min(256L, state$direct_point_limit)
-
   evaluate = function(t) SPACox_lazy_CGF_evaluate(state, t)
 
   list(cumul = NULL,
        K_org_emp = function(t) evaluate(t)[,1L],
        K_1_emp = function(t) evaluate(t)[,2L],
        K_2_emp = function(t) evaluate(t)[,3L],
-       n_total = n.total,
-       n_zero = n.zero,
-       resid_nonzero = resid_nonzero,
-       backend = backend,
-       kernel = kernel,
-       threads = threads,
+       n_total = spec$n_total,
+       n_zero = spec$n_zero,
+       resid_nonzero = spec$resid_nonzero,
+       backend = spec$backend,
+       kernel = spec$kernel,
+       threads = spec$threads,
        state = state)
+}
+
+SPACox_lazy_CGF_public = function(spec)
+{
+  evaluate = function(t) SPACox_lazy_CGF_public_evaluate(spec, t)
+  state = list(mode = "deferred",
+               direct_points = 0L,
+               grid_builds = 0L,
+               sparse_mode = "direct",
+               workload_selected = FALSE)
+
+  list(cumul = NULL,
+       K_org_emp = function(t) evaluate(t)[,1L],
+       K_1_emp = function(t) evaluate(t)[,2L],
+       K_2_emp = function(t) evaluate(t)[,3L],
+       n_total = spec$n_total,
+       n_zero = spec$n_zero,
+       resid_nonzero = spec$resid_nonzero,
+       backend = spec$backend,
+       kernel = spec$kernel,
+       threads = spec$threads,
+       state = state)
+}
+
+SPACox_lazy_CGF_public_evaluate = function(spec, t)
+{
+  if(!is.numeric(t) || any(!is.finite(t)))
+    stop("CGF evaluation points should be finite numeric values.")
+
+  t = as.double(t)
+  if(length(t) == 0)
+    return(matrix(numeric(0), nrow=0, ncol=3))
+
+  t = pmax(spec$range[1L], pmin(spec$range[2L], t))
+  if(length(t) <= spec$direct_request_limit)
+    return(SPACox_lazy_CGF_values(spec, t))
+
+  # Preserve the lazy evaluator's dense-request behavior without retaining
+  # mutable strategy state on the public null model.
+  idx0 = qcauchy(seq_len(spec$length_out)/(spec$length_out+1))
+  idx1 = idx0 * max(spec$range) / max(idx0)
+  values = SPACox_lazy_CGF_values(spec, idx1)
+  cbind(approxfun(idx1, values[,1L], rule=2)(t),
+        approxfun(idx1, values[,2L], rule=2)(t),
+        approxfun(idx1, values[,3L], rule=2)(t))
 }
 
 SPACox_lazy_CGF_values = function(state, t)
@@ -348,6 +407,34 @@ SPACox_lazy_CGF_prepare_workload = function(obj.null, n.variants)
   state$workload_selected = TRUE
 
   invisible(NULL)
+}
+
+SPACox_prepare_analysis_CGF = function(obj.null, n.variants, prepare.workload=TRUE)
+{
+  if(isTRUE(obj.null$cgf_analysis_ready)) {
+    if(prepare.workload)
+      SPACox_lazy_CGF_prepare_workload(obj.null, n.variants)
+    return(obj.null)
+  }
+
+  if(is.null(obj.null$cgf_spec)) {
+    # Eager models and null models created by earlier package versions already
+    # carry their final evaluators. Preserve those paths unchanged.
+    if(prepare.workload)
+      SPACox_lazy_CGF_prepare_workload(obj.null, n.variants)
+    obj.null$cgf_analysis_ready = TRUE
+    return(obj.null)
+  }
+
+  cgf = SPACox_lazy_CGF_from_spec(obj.null$cgf_spec)
+  obj.null$K_org_emp = cgf$K_org_emp
+  obj.null$K_1_emp = cgf$K_1_emp
+  obj.null$K_2_emp = cgf$K_2_emp
+  obj.null$cgf_state = cgf$state
+  obj.null$cgf_analysis_ready = TRUE
+  if(prepare.workload)
+    SPACox_lazy_CGF_prepare_workload(obj.null, n.variants)
+  obj.null
 }
 
 SPACox_CGF_threads = function(threads)
@@ -551,7 +638,7 @@ SPACox = function(obj.null,
 
   ### Prepare the main output data frame
   n.Geno = ncol(Geno.mtx)
-  SPACox_lazy_CGF_prepare_workload(obj.null, n.Geno)
+  obj.null = SPACox_prepare_analysis_CGF(obj.null, n.Geno)
   output = matrix(NA, n.Geno, 7)
   colnames(output) = c("MAF","missing.rate","p.value.spa","p.value.norm","Stat","Var","z")
   rownames(output) = colnames(Geno.mtx)
@@ -602,6 +689,9 @@ SPACox.one.SNP = function(g,
                           CovAdj.cutoff = 5e-5,
                           G.model = "Add")
 {
+  if(!isTRUE(obj.null$cgf_analysis_ready))
+    obj.null = SPACox_prepare_analysis_CGF(obj.null, 1L, prepare.workload=FALSE)
+
   g[g==-9]=NA  # since we add plink input
   ## calculate MAF and update genotype vector
   MAF = mean(g, na.rm=T)/2

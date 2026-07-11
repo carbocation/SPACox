@@ -99,6 +99,10 @@ SPACox.plink = function(obj.null,
   N = nrow(fam.data)
   M = nrow(bim.data)
 
+  # Keep one private lazy evaluator across all chunks without mutating the
+  # caller's null model or rebuilding the CGF grid for every chunk.
+  obj.null = SPACox_prepare_analysis_CGF(obj.null, M)
+
   print(paste0("Totally ", M, " markers in plink files."))
   if(any(obj.null$gIDs != fam.data$V2))
     stop("any(obj.null$gIDs != fam.data$V2): when fitting null model, please give gIDs as the same order as in the plink files.")
